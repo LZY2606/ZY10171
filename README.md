@@ -189,6 +189,15 @@ To return all entries from an R-tree:
 Observable<Entry<T, Geometry>> results = tree.entries();
 ```
 
+### Query path anatomy (backpressure, pruning, nearest)
+An executable, test-backed walk-through of how geometry predicates, the strict
+distance upper bound and subscriber demand decide exactly which nodes are pushed,
+pruned or merely not-yet-visited (including `request(1)` stepping, cancel,
+error termination, `maxDistance`/`maxCount` and structural sharing) is in
+[src/docs/query-path-anatomy.md](src/docs/query-path-anatomy.md). Every
+conclusion there links to a named test in
+[`QueryPathAnatomyTest`](src/test/java/com/github/davidmoten/rtree/QueryPathAnatomyTest.java).
+
 Search with a custom geometry
 -----------------------------------
 Suppose you make a custom geometry like ```Polygon``` and you want to search an ```RTree<String,Point>``` for points inside the polygon. This is how you do it:

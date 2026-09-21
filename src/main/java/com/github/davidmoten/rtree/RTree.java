@@ -660,6 +660,28 @@ public final class RTree<T, S extends Geometry> {
     }
 
     /**
+     * Package-private instrumented variant of {@link #search(Func1)} used by the
+     * query-traversal tests. Not part of the public API: the {@code observer}
+     * records node pushes, MBR prunes, leaf hits/misses, request, cancel,
+     * terminal and error events as the traversal actually plays out, so the
+     * tests do not have to infer access order from the result set. An empty
+     * tree reports completion immediately, exactly like {@link #search(Func1)}.
+     *
+     * @param condition
+     *            return Entries whose geometry satisfies the given condition
+     * @param observer
+     *            package-private traversal event recorder
+     * @return sequence of matching entries
+     */
+    Observable<Entry<T, S>> search(Func1<? super Geometry, Boolean> condition,
+            SearchObserver observer) {
+        return root
+                .map(node -> Observable.unsafeCreate(
+                        new OnSubscribeSearch<>(node, condition, observer)))
+                .orElseGet(Observable::empty);
+    }
+
+    /**
      * Returns a predicate function that indicates if {@link Geometry} intersects
      * with a given rectangle.
      * 

@@ -15,15 +15,22 @@ final class OnSubscribeSearch<T, S extends Geometry> implements OnSubscribe<Entr
 
     private final Node<T, S> node;
     private final Func1<? super Geometry, Boolean> condition;
+    private final SearchObserver observer;
 
     OnSubscribeSearch(Node<T, S> node, Func1<? super Geometry, Boolean> condition) {
+        this(node, condition, SearchObserver.noop());
+    }
+
+    OnSubscribeSearch(Node<T, S> node, Func1<? super Geometry, Boolean> condition,
+            SearchObserver observer) {
         this.node = node;
         this.condition = condition;
+        this.observer = observer;
     }
 
     @Override
     public void call(Subscriber<? super Entry<T, S>> subscriber) {
-        subscriber.setProducer(new SearchProducer<T, S>(node, condition, subscriber));
+        subscriber.setProducer(new SearchProducer<T, S>(node, condition, subscriber, observer));
     }
 
     @VisibleForTesting
@@ -32,19 +39,50 @@ final class OnSubscribeSearch<T, S extends Geometry> implements OnSubscribe<Entr
         private final Subscriber<? super Entry<T, S>> subscriber;
         private final Node<T, S> node;
         private final Func1<? super Geometry, Boolean> condition;
+        private final SearchObserver observer;
+        private final boolean instrumented;
         private volatile ImmutableStack<NodePosition<T, S>> stack;
         private final AtomicLong requested = new AtomicLong(0);
 
         SearchProducer(Node<T, S> node, Func1<? super Geometry, Boolean> condition,
                 Subscriber<? super Entry<T, S>> subscriber) {
+            this(node, condition, subscriber, SearchObserver.noop());
+        }
+
+        SearchProducer(Node<T, S> node, Func1<? super Geometry, Boolean> condition,
+                Subscriber<? super Entry<T, S>> subscriber, SearchObserver observer) {
             this.node = node;
             this.condition = condition;
             this.subscriber = subscriber;
+            this.observer = observer;
+            this.instrumented = observer != SearchObserver.noop();
             stack = ImmutableStack.create(new NodePosition<T, S>(node, 0));
+            if (instrumented) {
+                observer.push(node, 0);
+            }
+        }
+
+        /**
+         * Package-private test support: current traversal stack, or
+         * {@code null} after the walk has exhausted/cancelled and been cleared.
+         */
+        ImmutableStack<NodePosition<T, S>> stackForTesting() {
+            return stack;
+        }
+
+        /**
+         * Package-private test support: immutable root node retained by the
+         * producer for its whole lifetime (shared with the owning RTree).
+         */
+        Node<T, S> rootNodeForTesting() {
+            return node;
         }
 
         @Override
         public void request(long n) {
+            if (instrumented) {
+                observer.request(n);
+            }
             try {
                 if (n <= 0 || requested.get() == Long.MAX_VALUE)
                     // none requested or already started with fast path
@@ -55,14 +93,27 @@ final class OnSubscribeSearch<T, S extends Geometry> implements OnSubscribe<Entr
                 } else
                     requestSome(n);
             } catch (RuntimeException e) {
+                if (instrumented) {
+                    observer.error(e);
+                }
                 subscriber.onError(e);
             }
         }
 
         private void requestAll() {
-            node.searchWithoutBackpressure(condition, subscriber);
-            if (!subscriber.isUnsubscribed())
+            if (instrumented) {
+                // test-only instrumented fast path (same traversal semantics,
+                // extra events); never used on the production path
+                ObservedSearch.searchWithoutBackpressure(node, condition, subscriber, observer);
+            } else {
+                node.searchWithoutBackpressure(condition, subscriber);
+            }
+            if (!subscriber.isUnsubscribed()) {
+                if (instrumented) {
+                    observer.complete();
+                }
                 subscriber.onCompleted();
+            }
         }
 
         private void requestSome(long n) {
@@ -81,11 +132,16 @@ final class OnSubscribeSearch<T, S extends Geometry> implements OnSubscribe<Entr
                 while (true) {
                     // minimize atomic reads by assigning to a variable here
                     long r = requested.get();
-                    st = Backpressure.search(condition, subscriber, st, r);
+                    st = instrumented
+                            ? Backpressure.search(condition, subscriber, st, r, observer)
+                            : Backpressure.search(condition, subscriber, st, r);
                     if (st.isEmpty()) {
                         // release some state for gc (although empty stack so not very significant)
                         stack = null;
                         if (!subscriber.isUnsubscribed()) {
+                            if (instrumented) {
+                                observer.complete();
+                            }
                             subscriber.onCompleted();
                         }
                         return;

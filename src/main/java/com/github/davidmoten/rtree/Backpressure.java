@@ -19,31 +19,45 @@ final class Backpressure {
             final Func1<? super Geometry, Boolean> condition,
             final Subscriber<? super Entry<T, S>> subscriber,
             final ImmutableStack<NodePosition<T, S>> stack, final long request) {
+        return search(condition, subscriber, stack, request, SearchObserver.noop());
+    }
+
+    static <T, S extends Geometry> ImmutableStack<NodePosition<T, S>> search(
+            final Func1<? super Geometry, Boolean> condition,
+            final Subscriber<? super Entry<T, S>> subscriber,
+            final ImmutableStack<NodePosition<T, S>> stack, final long request,
+            final SearchObserver observer) {
         StackAndRequest<NodePosition<T, S>> state = StackAndRequest.create(stack, request);
-        return searchAndReturnStack(condition, subscriber, state);
+        if (observer == SearchObserver.noop()) {
+            return searchAndReturnStack(condition, subscriber, state, null);
+        }
+        return searchAndReturnStack(condition, subscriber, state, observer);
     }
 
     private static <S extends Geometry, T> ImmutableStack<NodePosition<T, S>> searchAndReturnStack(
             final Func1<? super Geometry, Boolean> condition,
             final Subscriber<? super Entry<T, S>> subscriber,
-            StackAndRequest<NodePosition<T, S>> state) {
+            StackAndRequest<NodePosition<T, S>> state, final SearchObserver observer) {
 
         while (!state.stack.isEmpty()) {
             NodePosition<T, S> np = state.stack.peek();
-            if (subscriber.isUnsubscribed())
+            if (subscriber.isUnsubscribed()) {
+                if (observer != null) {
+                    observer.cancel();
+                }
                 return ImmutableStack.empty();
-            else if (state.request <= 0)
+            } else if (state.request <= 0)
                 return state.stack;
             else if (np.position() == np.node().count()) {
                 // handle after last in node
                 state = StackAndRequest.create(searchAfterLastInNode(state.stack), state.request);
             } else if (np.node() instanceof NonLeaf) {
                 // handle non-leaf
-                state = StackAndRequest.create(searchNonLeaf(condition, state.stack, np),
-                        state.request);
+                state = StackAndRequest.create(
+                        searchNonLeaf(condition, state.stack, np, observer), state.request);
             } else {
                 // handle leaf
-                state = searchLeaf(condition, subscriber, state, np);
+                state = searchLeaf(condition, subscriber, state, np, observer);
             }
         }
         return state.stack;
@@ -67,11 +81,19 @@ final class Backpressure {
     private static <T, S extends Geometry> StackAndRequest<NodePosition<T, S>> searchLeaf(
             final Func1<? super Geometry, Boolean> condition,
             final Subscriber<? super Entry<T, S>> subscriber,
-            StackAndRequest<NodePosition<T, S>> state, NodePosition<T, S> np) {
+            StackAndRequest<NodePosition<T, S>> state, NodePosition<T, S> np,
+            final SearchObserver observer) {
         final long nextRequest;
         Entry<T, S> entry = ((Leaf<T, S>) np.node()).entry(np.position());
-        if (condition.call(entry.geometry())) {
+        final boolean matches = condition.call(entry.geometry());
+        if (observer != null) {
+            observer.entryTested(entry, matches);
+        }
+        if (matches) {
             subscriber.onNext(entry);
+            if (observer != null) {
+                observer.hit(entry);
+            }
             nextRequest = state.request - 1;
         } else
             nextRequest = state.request;
@@ -80,14 +102,32 @@ final class Backpressure {
 
     private static <S extends Geometry, T> ImmutableStack<NodePosition<T, S>> searchNonLeaf(
             final Func1<? super Geometry, Boolean> condition,
-            ImmutableStack<NodePosition<T, S>> stack, NodePosition<T, S> np) {
+            ImmutableStack<NodePosition<T, S>> stack, NodePosition<T, S> np,
+            final SearchObserver observer) {
         Node<T, S> child = ((NonLeaf<T, S>) np.node()).child(np.position());
+        // the root sits alone on the initial stack so a child pushed at this
+        // point has tree depth equal to the current physical stack size
+        final int childDepth = observer == null ? 0 : size(stack);
         if (condition.call(child.geometry())) {
+            if (observer != null) {
+                observer.push(child, childDepth);
+            }
             stack = stack.push(new NodePosition<T, S>(child, 0));
         } else {
+            if (observer != null) {
+                observer.prune(child, childDepth);
+            }
             stack = stack.pop().push(np.nextPosition());
         }
         return stack;
+    }
+
+    private static <T> int size(ImmutableStack<T> stack) {
+        int count = 0;
+        for (T ignored : stack) {
+            count++;
+        }
+        return count;
     }
 
     private static <S extends Geometry, T> ImmutableStack<NodePosition<T, S>> searchAfterLastInNode(
