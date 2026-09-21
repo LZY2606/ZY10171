@@ -302,6 +302,8 @@ Backpressure
 -----------------
 The backpressure slow path may be enabled by some RxJava operators. This may slow search performance by a factor of 3 but avoids possible out of memory errors and thread starvation due to asynchronous buffering. Backpressure is benchmarked below.
 
+A step-by-step, test-linked explanation of how geometry predicates, distance upper bounds and subscriber demand together decide which nodes are visited (including the difference between an MBR prune and a branch not yet reached under backpressure) is in [Query path anatomy](src/docs/query-path.md).
+
 Visualizer
 --------------
 To visualize the R-tree in a PNG file of size 600 by 600 pixels just call:

@@ -654,8 +654,26 @@ public final class RTree<T, S extends Geometry> {
      */
     @VisibleForTesting
     Observable<Entry<T, S>> search(Func1<? super Geometry, Boolean> condition) {
+        return search(condition, SearchObserver.<T, S>noop());
+    }
+
+    /**
+     * Package-private observed search used by the query-path test harness. Not
+     * part of the public API. See {@link SearchObserver} for the meaning of the
+     * recorded events.
+     *
+     * @param condition
+     *            geometry predicate; it must be true for an entry whenever it
+     *            is true for the MBR of an ancestor node
+     * @param observer
+     *            receives structural traversal events
+     * @return sequence of matching entries
+     */
+    Observable<Entry<T, S>> search(Func1<? super Geometry, Boolean> condition,
+            SearchObserver<T, S> observer) {
         return root
-                .map(node -> Observable.unsafeCreate(new OnSubscribeSearch<>(node, condition)))
+                .map(node -> Observable.unsafeCreate(new OnSubscribeSearch<>(node, condition,
+                        observer)))
                 .orElseGet(Observable::empty);
     }
 
@@ -782,6 +800,23 @@ public final class RTree<T, S extends Geometry> {
     }
 
     /**
+     * Package-private observed variant of {@link #search(Point, double)} used
+     * by the query-path test harness. Not part of the public API.
+     *
+     * @param p
+     *            point to measure distance from
+     * @param maxDistance
+     *            strict upper bound on entry distance
+     * @param observer
+     *            receives structural traversal events
+     * @return entries strictly less than maxDistance from p
+     */
+    Observable<Entry<T, S>> search(final Point p, final double maxDistance,
+            SearchObserver<T, S> observer) {
+        return search(g -> g.distance(p.mbr()) < maxDistance, observer);
+    }
+
+    /**
      * Returns the nearest k entries (k=maxCount) to the given rectangle where the
      * entries are strictly less than a given maximum distance from the rectangle.
      * 
@@ -797,6 +832,28 @@ public final class RTree<T, S extends Geometry> {
             int maxCount) {
         return search(r, maxDistance).lift(new OperatorBoundedPriorityQueue<Entry<T, S>>(maxCount,
                 Comparators.<T, S>ascendingDistance(r)));
+    }
+
+    /**
+     * Package-private observed variant of {@link #nearest(Rectangle, double,
+     * int)} for the query-path test harness. Not part of the public API.
+     *
+     * @param r
+     *            rectangle to measure distance from
+     * @param maxDistance
+     *            strict upper bound on entry distance
+     * @param maxCount
+     *            maximum number of entries to return
+     * @param observer
+     *            receives structural traversal events from the underlying
+     *            search
+     * @return nearest entries to maxCount, in ascending order of distance
+     */
+    Observable<Entry<T, S>> nearest(final Rectangle r, final double maxDistance, int maxCount,
+            SearchObserver<T, S> observer) {
+        return search(g -> g.distance(r) < maxDistance, observer)
+                .lift(new OperatorBoundedPriorityQueue<Entry<T, S>>(maxCount,
+                        Comparators.<T, S>ascendingDistance(r)));
     }
 
     /**
